@@ -31,12 +31,13 @@ object Transactor {
     *                       terminating the session
     */
   def apply[T](value: T, sessionTimeout: FiniteDuration): Behavior[Command[T]] =
-      ???
+      SelectiveReceive(30, idle(value, sessionTimeout).narrow[Command[T]])//.narrow[Command[T]]
+
 
   /**
     * @return A behavior that defines how to react to any [[PrivateCommand]] when the transactor
     *         has no currently running session.
-    *         [[Committed]] and [[RolledBack]] messages should be ignored, and a [[Begin]] message
+    *         [[Committed ]] and [[RolledBack]] messages should be ignored, and a [[Begin]] message
     *         should create a new session.
     *
     * @param value Value of the transactor
@@ -53,8 +54,21 @@ object Transactor {
     *   - After a session is started, the next behavior should be [[inSession]],
     *   - Messages other than [[Begin]] should not change the behavior.
     */
-  private def idle[T](value: T, sessionTimeout: FiniteDuration): Behavior[PrivateCommand[T]] =
-    ???
+
+  private def idle[T](value: T, sessionTimeout: FiniteDuration): Behavior[PrivateCommand[T]] = {
+    Behaviors receivePartial {
+      case (ctx, Begin(replyTo)) =>
+        //initiate a session actor that can handle Extract, Modify, Rollback or Commit msgs
+        val session = ctx.spawnAnonymous(
+          sessionHandler(value, ctx.self, Set.empty))
+        //introduce the requester to the session (delegate)
+        replyTo ! session
+        //Deathwatch - sepecify what msg to send in case the watched sends a Terminated
+        ctx.watchWith(session, RolledBack(session))
+        inSession(value, sessionTimeout, session)
+      case _ => Behaviors.same //Messages other than [[Begin]] should not change the behavior.
+    }
+  }
 
   /**
     * @return A behavior that defines how to react to [[PrivateCommand]] messages when the transactor has
@@ -67,7 +81,15 @@ object Transactor {
     * @param sessionRef Reference to the child [[Session]] actor
     */
   private def inSession[T](rollbackValue: T, sessionTimeout: FiniteDuration, sessionRef: ActorRef[Session[T]]): Behavior[PrivateCommand[T]] =
-    ???
+    Behaviors receivePartial {
+      case (_, Transactor.Committed(session, value)) if sessionRef.equals(session) =>
+        idle(value, sessionTimeout)
+      case (ctx, Transactor.RolledBack(session)) if sessionRef.equals(session) =>
+        ctx stop session
+        idle(rollbackValue, sessionTimeout)
+
+      case (_, Begin(_)) => Behaviors.unhandled
+    }
 
   /**
     * @return A behavior handling [[Session]] messages. See in the instructions
@@ -78,6 +100,23 @@ object Transactor {
     * @param done Set of already applied [[Modify]] messages
     */
   private def sessionHandler[T](currentValue: T, commit: ActorRef[Committed[T]], done: Set[Long]): Behavior[Session[T]] =
-      ???
+      Behaviors.receive[Session[T]] {
+        case (_, Extract(f, replyTo) ) =>
+          replyTo ! f(currentValue)
+          Behaviors.same
+        case (_, Modify(f, id, reply, replyTo)) if done.isEmpty || id > done.max =>
+          replyTo ! reply
+          sessionHandler(f(currentValue), commit, done + id)
 
+        case (_, Modify(_, id, reply, replyTo)) if id <= done.max =>
+          replyTo ! reply
+          Behaviors.same
+
+        case (ctx, Commit(reply, replyTo)) =>
+          commit ! Committed(ctx.self, currentValue)
+          replyTo ! reply
+          Behaviors.stopped
+        case (_, Rollback()) =>
+          Behaviors.stopped
+      }
 }
