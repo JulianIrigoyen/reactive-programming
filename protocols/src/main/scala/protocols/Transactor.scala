@@ -33,10 +33,11 @@ object Transactor {
   def apply[T](value: T, sessionTimeout: FiniteDuration): Behavior[Command[T]] =
       SelectiveReceive(30, idle(value, sessionTimeout).narrow[Command[T]])//.narrow[Command[T]]
 
+
   /**
     * @return A behavior that defines how to react to any [[PrivateCommand]] when the transactor
     *         has no currently running session.
-    *         [[Committed]] and [[RolledBack]] messages should be ignored, and a [[Begin]] message
+    *         [[Committed ]] and [[RolledBack]] messages should be ignored, and a [[Begin]] message
     *         should create a new session.
     *
     * @param value Value of the transactor
@@ -53,18 +54,21 @@ object Transactor {
     *   - After a session is started, the next behavior should be [[inSession]],
     *   - Messages other than [[Begin]] should not change the behavior.
     */
-  private def idle[T](value: T, sessionTimeout: FiniteDuration): Behavior[PrivateCommand[T]] =
-    Behaviors receivePartial {
-      case (ctx, Transactor.Begin(replyTo)) =>
-        val session = ctx.spawnAnonymous(sessionHandler(value, ctx.self, Set.empty))
 
-        //The Transactor uses DeathWatch to supervise each session, rolling back its effects upon failure.
-        ctx.watchWith(session, RolledBack(session))
-        ctx.setReceiveTimeout(sessionTimeout, RolledBack(session))
+  private def idle[T](value: T, sessionTimeout: FiniteDuration): Behavior[PrivateCommand[T]] = {
+    Behaviors receivePartial {
+      case (ctx, Begin(replyTo)) =>
+        //initiate a session actor that can handle Extract, Modify, Rollback or Commit msgs
+        val session = ctx.spawnAnonymous(
+          sessionHandler(value, ctx.self, Set.empty))
+        //introduce the requester to the session (delegate)
         replyTo ! session
+        //Deathwatch - sepecify what msg to send in case the watched sends a Terminated
+        ctx.watchWith(session, RolledBack(session))
         inSession(value, sessionTimeout, session)
-      case _ => Behaviors.ignore
+      case _ => Behaviors.same //Messages other than [[Begin]] should not change the behavior.
     }
+  }
 
   /**
     * @return A behavior that defines how to react to [[PrivateCommand]] messages when the transactor has
@@ -96,46 +100,23 @@ object Transactor {
     * @param done Set of already applied [[Modify]] messages
     */
   private def sessionHandler[T](currentValue: T, commit: ActorRef[Committed[T]], done: Set[Long]): Behavior[Session[T]] =
-      Behaviors.receivePartial {
-        case (_, Extract(f, replyTo)) =>
-          // apply the given projector function to the current Transactor value (possibly modified by the current session) and return the result to the given ActorRef;
-          // if the projector function throws an exception the session is terminated
+      Behaviors.receive[Session[T]] {
+        case (_, Extract(f, replyTo) ) =>
           replyTo ! f(currentValue)
           Behaviors.same
-
-        case (ctx, Modify(f, id, reply, replyTo)) =>
-          //calculate a new value for the Transactor by applying the given function to the current value
-          // (possibly modified by the current session already) and return the given reply value
-          // to the given replyTo ActorRef; if the function throws an exception the session is terminated
-          // and all its modifications are rolled back;
-          // the id argument serves as a deduplication identifier:
-          //  sending the a Modify command with an id previously used within the current session
-          //  will not apply the modification function but send the reply immediately
-          (done, id) match {
-            //new modify op
-            case _ if !(done contains id) =>
-              //notify change
-              val modification = f(currentValue)
-              ctx.self ! Commit(modification ,replyTo)
-              //update state
-              sessionHandler(f(currentValue), commit, done + id)
-
-            //already done
-            case _ =>
-              replyTo ! reply
-              Behaviors.same
-          }
-
-        case (context, Commit(reply, replyTo)) =>
-          //terminate the current session, committing the performed modifications and thus making
-          // the modified value available to the next session;
-          // the given reply is sent to the given ActorRef as confirmation
+        case (_, Modify(f, id, reply, replyTo)) if done.isEmpty || id > done.max =>
           replyTo ! reply
-          commit ! Committed(context.self, currentValue)
-          Behaviors.stopped
+          sessionHandler(f(currentValue), commit, done + id)
 
+        case (_, Modify(_, id, reply, replyTo)) if id <= done.max =>
+          replyTo ! reply
+          Behaviors.same
+
+        case (ctx, Commit(reply, replyTo)) =>
+          commit ! Committed(ctx.self, currentValue)
+          replyTo ! reply
+          Behaviors.stopped
         case (_, Rollback()) =>
           Behaviors.stopped
-
       }
 }

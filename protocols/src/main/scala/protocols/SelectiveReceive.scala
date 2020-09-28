@@ -1,11 +1,10 @@
 package protocols
 
-import akka.actor.typed.{Behavior, ExtensibleBehavior, Signal, TypedActorContext}
+import akka.actor.typed.Behavior
 import akka.actor.typed.scaladsl._
 
 import scala.reflect.ClassTag
 import akka.actor.typed.Behavior.{canonicalize, interpretMessage, isUnhandled, start, validateAsInitial}
-import akka.actor.typed.internal.BehaviorImpl
 
 
 object SelectiveReceive {
@@ -69,11 +68,8 @@ object SelectiveReceive {
         if (isUnhandled(next)) {
           buffer stash message
           Behaviors.same
-        } else if(!buffer.isFull) {
+        } else SelectiveReceive(bufferSize, buffer.unstashAll(nextCanonicalized))
 
-          buffer.unstashAll(next)
-          SelectiveReceive(bufferSize, nextCanonicalized)
-        } else SelectiveReceive(bufferSize, nextCanonicalized)
     }
 
 }
@@ -87,4 +83,14 @@ object SelectiveReceive {
   *
   * SelectiveReceive(bufferSize, buffer.unstashAll(next))
   * }
+  *
+  *
+if (isUnhandled(next)) {
+          buffer stash message
+          Behaviors.same
+        } else if(!buffer.isFull) {
+
+          buffer.unstashAll(next)
+          SelectiveReceive(bufferSize, nextCanonicalized)
+        } else SelectiveReceive(bufferSize, nextCanonicalized)
   */
