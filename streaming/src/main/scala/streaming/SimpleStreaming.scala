@@ -96,8 +96,10 @@ object SimpleStreaming extends ExtraStreamOps with SimpleStreamingInterface {
    * and the elements can be passed through directly.
    *
    * If you'd like to see the exact events happening you can call `.logAllEvents` on the Flow you are returning here
+   *
+   * https://doc.akka.io/docs/akka/current/stream/stream-cookbook.html#working-with-rate
+   * https://doc.akka.io/docs/akka/current/stream/operators/Source-or-Flow/conflate.html#conflate
    */
-    //https://doc.akka.io/docs/akka/current/stream/operators/Source-or-Flow/conflate.html#conflate
   def sumUntilBackpressureGoesAway: Flow[Int, Int, _] = {
     Flow[Int].conflate(_+_)
   }
