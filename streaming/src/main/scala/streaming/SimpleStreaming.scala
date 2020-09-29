@@ -69,7 +69,7 @@ object SimpleStreaming extends ExtraStreamOps with SimpleStreamingInterface {
    */
   def recoverSingleElement(ints: Source[Int, NotUsed]): Source[Int, NotUsed] =
     ints.recover {
-      case e: IllegalStateException => -1
+      case _: IllegalStateException => -1
     }
 
   /**
