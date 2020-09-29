@@ -67,30 +67,9 @@ object SelectiveReceive {
         //the message will then be put into a StashBuffer and retried upon each behavior change
         if (isUnhandled(next)) {
           buffer stash message
-          Behaviors.same
-        } else SelectiveReceive(bufferSize, buffer.unstashAll(nextCanonicalized))
+          intercept(bufferSize, buffer, started)
+        } else buffer.unstashAll(SelectiveReceive(bufferSize, nextCanonicalized))
 
     }
 
 }
-
-/**
-  * next match {
-  * case _ if isUnhandled(next) =>
-  * buffer stash(message)
-  * Behaviors.same
-  * case _ =>
-  *
-  * SelectiveReceive(bufferSize, buffer.unstashAll(next))
-  * }
-  *
-  *
-if (isUnhandled(next)) {
-          buffer stash message
-          Behaviors.same
-        } else if(!buffer.isFull) {
-
-          buffer.unstashAll(next)
-          SelectiveReceive(bufferSize, nextCanonicalized)
-        } else SelectiveReceive(bufferSize, nextCanonicalized)
-  */

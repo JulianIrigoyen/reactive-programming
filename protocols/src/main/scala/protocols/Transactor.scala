@@ -31,7 +31,7 @@ object Transactor {
     *                       terminating the session
     */
   def apply[T](value: T, sessionTimeout: FiniteDuration): Behavior[Command[T]] =
-      SelectiveReceive(30, idle(value, sessionTimeout).narrow[Command[T]])//.narrow[Command[T]]
+      SelectiveReceive(30, idle(value, sessionTimeout).narrow[Command[T]])
 
 
   /**
@@ -65,7 +65,9 @@ object Transactor {
         replyTo ! session
         //Deathwatch - sepecify what msg to send in case the watched sends a Terminated
         ctx.watchWith(session, RolledBack(session))
+        ctx.setReceiveTimeout(sessionTimeout, RolledBack(session))
         inSession(value, sessionTimeout, session)
+      case (_, RolledBack(_)) => Behaviors.ignore
       case _ => Behaviors.same //Messages other than [[Begin]] should not change the behavior.
     }
   }
@@ -82,9 +84,9 @@ object Transactor {
     */
   private def inSession[T](rollbackValue: T, sessionTimeout: FiniteDuration, sessionRef: ActorRef[Session[T]]): Behavior[PrivateCommand[T]] =
     Behaviors receivePartial {
-      case (_, Transactor.Committed(session, value)) if sessionRef.equals(session) =>
+      case (_, Committed(session, value))  =>
         idle(value, sessionTimeout)
-      case (ctx, Transactor.RolledBack(session)) if sessionRef.equals(session) =>
+      case (ctx, RolledBack(session)) =>
         ctx stop session
         idle(rollbackValue, sessionTimeout)
 
@@ -116,7 +118,7 @@ object Transactor {
           commit ! Committed(ctx.self, currentValue)
           replyTo ! reply
           Behaviors.stopped
-        case (_, Rollback()) =>
+        case (ctx, Rollback()) =>
           Behaviors.stopped
       }
 }
