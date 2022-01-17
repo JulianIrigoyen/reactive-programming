@@ -50,7 +50,7 @@ object BinaryTreeSet {
 }
 
 
-class BinaryTreeSet extends Actor {
+class BinaryTreeSet extends Actor with ActorLogging {
   import BinaryTreeSet._
   import BinaryTreeNode._
 
@@ -66,14 +66,30 @@ class BinaryTreeSet extends Actor {
 
   // optional
   /** Accepts `Operation` and `GC` messages. */
-  val normal: Receive = { case _ => ??? }
+  val normal: Receive = {
+    case operation: Operation =>
+      root ! operation
+
+    case GC =>
+      val newRoot = createRoot
+      root ! CopyTo(newRoot)
+      context.become(garbageCollecting(newRoot))
+  }
 
   // optional
   /** Handles messages while garbage collection is performed.
-    * `newRoot` is the root of the new binary tree where we want to copy
-    * all non-removed elements into.
-    */
-  def garbageCollecting(newRoot: ActorRef): Receive = ???
+   * `newRoot` is the root of the new binary tree where we want to copy
+   * all non-removed elements into.
+   */
+  def garbageCollecting(newRoot: ActorRef): Receive = {
+    case operation: Operation => pendingQueue :+= operation
+    case CopyFinished =>
+      root = newRoot
+      context.unbecome()
+      for (pendingOp <- pendingQueue) newRoot ! pendingOp
+      pendingQueue = Queue.empty[Operation]
+      log.info("Finished collecting garbage")
+  }
 
 }
 
@@ -91,10 +107,12 @@ object BinaryTreeNode {
    */
   case object CopyFinished
 
-  def props(elem: Int, initiallyRemoved: Boolean) = Props(classOf[BinaryTreeNode],  elem, initiallyRemoved)
+  def props(elem: Int, initiallyRemoved: Boolean) =
+    Props(classOf[BinaryTreeNode],  elem, initiallyRemoved)
 }
 
-class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
+class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor
+  with ActorLogging {
   import BinaryTreeNode._
   import BinaryTreeSet._
 
@@ -106,7 +124,52 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
 
   // optional
   /** Handles `Operation` messages and `CopyTo` requests. */
-  val normal: Receive = { case _ => ??? }
+  val normal: Receive = {
+    case cmd @ Insert(requester, id, elemToInsert) =>
+      if (elemToInsert == elem) {
+        removed = false
+        requester ! OperationFinished(id)
+      } else {
+        val next = nextPostion(elemToInsert)
+        subtrees.get(next) match {
+          case Some(value) => value ! cmd
+          case None =>
+            subtrees += next -> createNewNode(elemToInsert)
+            requester ! OperationFinished(id)
+            log.info(s"INSERTED $elemToInsert to the $next of $elem")
+        }
+      }
+
+    case cmd @ Remove(requester, id, elemToRemove) =>
+      if(elemToRemove == elem) {
+        removed = true
+        requester ! OperationFinished(id)
+        log.info(s"REMOVED $elemToRemove")
+      } else {
+        val next = nextPostion(elemToRemove)
+        if(subtrees.contains(next)) subtrees(next) ! cmd
+        else requester ! OperationFinished(id)
+      }
+
+    case cmd @ Contains(requester, id, elemToFind) =>
+      if(elemToFind == elem && !removed) requester ! ContainsResult(id, true)
+      else {
+        val next = nextPostion(elemToFind)
+        if(subtrees.contains(next)) subtrees(next) ! cmd
+        else requester ! ContainsResult(id, false)
+      }
+
+    case msg @ CopyTo(newTree) =>
+      if(subtrees.isEmpty && removed) {
+        context.parent ! CopyFinished
+        context.stop(self) //self ! PoisonPill
+      } else {
+        if (!removed) newTree ! Insert(self, elem * 10, elem)
+        val expected = subtrees.values.toSet
+        for(node <- subtrees.values) node ! msg
+        context.become(copying(expected, removed))
+      }
+  }
 
   // optional
   /** `expected` is the set of ActorRefs whose replies we are waiting for,
@@ -114,5 +177,17 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
     */
   def copying(expected: Set[ActorRef], insertConfirmed: Boolean): Receive = ???
 
+    case CopyFinished =>
+      val remaining = expected - sender()
+      if(remaining.isEmpty && insertConfirmed){
+        context.parent ! CopyFinished
+        self ! PoisonPill
+      } else context.become(copying(remaining, insertConfirmed))
+  }
+
+  def createNewNode(elemToInsert: Int): ActorRef =
+    context.actorOf(props(elemToInsert, initiallyRemoved = false), s"node-of-$elemToInsert")
+
+  val nextPostion: Int => Position = (incomingElem: Int) => if(incomingElem > elem) Right else Left
 
 }
